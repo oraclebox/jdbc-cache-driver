@@ -15,7 +15,7 @@
  */
 package com.qwazr.jdbc.cache;
 
-import javax.xml.bind.DatatypeConverter;
+import com.qwazr.jdbc.cache.util.HexUtils;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
@@ -86,7 +86,8 @@ class CachedStatement<T extends Statement> implements Statement {
     static String generateCacheKey(final String src) throws SQLException {
         try {
             MessageDigest md = MessageDigest.getInstance("MD5");
-            return DatatypeConverter.printHexBinary(md.digest(src.getBytes()));
+            byte[] digest = md.digest(src.getBytes());
+            return HexUtils.bytesToHex(digest);
         } catch (NoSuchAlgorithmException e) {
             throw new SQLException("MD5 is not available");
         }
