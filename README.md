@@ -122,6 +122,106 @@ for (int i = 1; i <= metaData.getColumnCount(); i++) {
 }
 ```
 
+### Integration with Oracle JDBC and HikariCP
+
+The JDBC cache driver can be used with Oracle JDBC and HikariCP connection pool. Here's how to set it up:
+
+1. **Add Required Dependencies**:
+```xml
+<dependency>
+    <groupId>com.qwazr</groupId>
+    <artifactId>jdbc-cache-driver</artifactId>
+    <version>1.3</version>
+</dependency>
+<dependency>
+    <groupId>com.oracle.database.jdbc</groupId>
+    <artifactId>ojdbc8</artifactId>
+    <version>21.1.0.0</version>
+</dependency>
+<dependency>
+    <groupId>com.zaxxer</groupId>
+    <artifactId>HikariCP</artifactId>
+    <version>4.0.3</version>
+</dependency>
+```
+
+2. **Configure HikariCP with JDBC Cache**:
+```java
+// Create HikariCP configuration
+HikariConfig config = new HikariConfig();
+config.setJdbcUrl("jdbc:cache:file:/path/to/cache/directory");
+config.setUsername("your_username");
+config.setPassword("your_password");
+
+// Set the JDBC cache driver class
+config.setDriverClassName("com.qwazr.jdbc.cache.Driver");
+
+// Configure cache properties
+Properties cacheProps = new Properties();
+cacheProps.setProperty("cache.driver.url", "jdbc:oracle:thin:@localhost:1521:ORCL");
+cacheProps.setProperty("cache.driver.class", "oracle.jdbc.OracleDriver");
+cacheProps.setProperty("cache.ttl", "3600"); // Cache TTL in seconds
+config.setDataSourceProperties(cacheProps);
+
+// Create the connection pool
+HikariDataSource dataSource = new HikariDataSource(config);
+```
+
+3. **Using the Connection Pool**:
+```java
+try (Connection conn = dataSource.getConnection();
+     Statement stmt = conn.createStatement();
+     ResultSet rs = stmt.executeQuery("SELECT * FROM employees")) {
+    
+    while (rs.next()) {
+        // Access data using column names
+        int id = rs.getInt("ID");
+        String name = rs.getString("NAME");
+        double salary = rs.getDouble("SALARY");
+    }
+} catch (SQLException e) {
+    e.printStackTrace();
+}
+```
+
+4. **Important Notes**:
+   - The cache directory must exist and be writable
+   - Set appropriate TTL (Time To Live) for cached results
+   - Oracle column names are typically uppercase unless quoted
+   - The cache driver will reuse cached results for identical queries within the TTL period
+
+5. **Example with Error Handling**:
+```java
+try (Connection conn = dataSource.getConnection()) {
+    // First query - will hit the database
+    try (Statement stmt = conn.createStatement();
+         ResultSet rs = stmt.executeQuery("SELECT * FROM employees")) {
+        while (rs.next()) {
+            System.out.println("First query result: " + rs.getString("NAME"));
+        }
+    }
+    
+    // Second query - will use cache if within TTL
+    try (Statement stmt = conn.createStatement();
+         ResultSet rs = stmt.executeQuery("SELECT * FROM employees")) {
+        while (rs.next()) {
+            System.out.println("Cached result: " + rs.getString("NAME"));
+        }
+    }
+} catch (SQLException e) {
+    System.err.println("Database error: " + e.getMessage());
+    e.printStackTrace();
+} finally {
+    // Don't close the dataSource here - it should be closed when the application shuts down
+}
+```
+
+6. **Performance Considerations**:
+   - HikariCP's connection pooling helps manage database connections efficiently
+   - The cache driver reduces database load by serving cached results
+   - Monitor cache directory size and adjust TTL as needed
+   - Consider using different cache directories for different types of queries
+
 Community
 ---------
 
