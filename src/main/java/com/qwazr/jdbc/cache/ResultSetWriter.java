@@ -294,13 +294,40 @@ class ResultSetWriter {
             output.writeDouble(val);
     }
 
+    /**
+     * Write a String of any size to the output stream.
+     * Overcomes the 65535 byte limitation of DataOutputStream.writeUTF
+     */
+    private static void writeUTFBig(final String str, final DataOutputStream output) throws IOException {
+        if (str == null) {
+            output.writeInt(-1);
+            return;
+        }
+        byte[] bytes = str.getBytes("UTF-8");
+        output.writeInt(bytes.length);
+        output.write(bytes);
+    }
+
+    /**
+     * Read a String of any size from the input stream.
+     */
+    private static String readUTFBig(final DataInputStream input) throws IOException {
+        int length = input.readInt();
+        if (length == -1) {
+            return null;
+        }
+        byte[] bytes = new byte[length];
+        input.readFully(bytes);
+        return new String(bytes, "UTF-8");
+    }
+
     private static void writeString(final int column, final ResultSet resultSet, final DataOutputStream output)
             throws SQLException, IOException {
         final String val = resultSet.getString(column);
         final boolean wasNull = resultSet.wasNull();
         output.writeBoolean(!wasNull);
         if (!wasNull)
-            output.writeUTF(val);
+            writeUTFBig(val, output);
     }
 
     private static void writeBigDecimal(final int column, final ResultSet resultSet, final DataOutputStream output)
@@ -346,7 +373,7 @@ class ResultSetWriter {
         final boolean wasNull = resultSet.wasNull();
         output.writeBoolean(!wasNull);
         if (!wasNull)
-            output.writeUTF(val.toString());
+            writeUTFBig(val.toString(), output);
     }
 
     private static void writeClob(final int column, final ResultSet resultSet, final DataOutputStream output)
@@ -357,9 +384,8 @@ class ResultSetWriter {
             output.writeBoolean(!wasNull);
             if (wasNull)
                 return;
-            // TODO Support reader for long sized string
             final long size = clob.length();
-            output.writeUTF(size == 0 ? "" : clob.getSubString(1, (int) clob.length()));
+            writeUTFBig(size == 0 ? "" : clob.getSubString(1, (int) clob.length()), output);
         } finally {
             if (clob != null) {
                 try {
@@ -404,7 +430,7 @@ class ResultSetWriter {
         case Types.NCHAR:
         case Types.NVARCHAR:
         case Types.LONGNVARCHAR:
-            return input.readUTF();
+            return readUTFBig(input);
         case Types.DATE:
             return new java.sql.Date(input.readLong());
         case Types.TIME:
@@ -414,9 +440,9 @@ class ResultSetWriter {
         case Types.TIMESTAMP_WITH_TIMEZONE:
             return new java.sql.Timestamp(input.readLong());
         case Types.ROWID:
-            return input.readUTF();
+            return readUTFBig(input);
         case Types.CLOB:
-            return input.readUTF();
+            return readUTFBig(input);
         case Types.BINARY:
         case Types.VARBINARY:
         case Types.LONGVARBINARY:
