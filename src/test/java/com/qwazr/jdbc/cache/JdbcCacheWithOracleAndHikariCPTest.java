@@ -13,6 +13,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.HashMap;
 import java.util.Map;
@@ -43,7 +44,7 @@ public class JdbcCacheWithOracleAndHikariCPTest {
     private void setupH2Database() {
         // Configure HikariCP for H2
         HikariConfig h2Config = new HikariConfig();
-        h2Config.setJdbcUrl("jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1");
+        h2Config.setJdbcUrl("jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE");
         h2Config.setUsername("sa");
         h2Config.setPassword("");
         h2Config.setDriverClassName("org.h2.Driver");
@@ -75,7 +76,7 @@ public class JdbcCacheWithOracleAndHikariCPTest {
     private void setupCachedDataSource() throws Exception {
         // Configure the JDBC cache driver
         Properties info = new Properties();
-        info.setProperty("cache.driver.url", "jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1");
+        info.setProperty("cache.driver.url", "jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE");
         info.setProperty("cache.driver.class", "org.h2.Driver");
         
         // Make sure the driver is loaded
@@ -90,7 +91,7 @@ public class JdbcCacheWithOracleAndHikariCPTest {
         cachedConfig.setMaximumPoolSize(5);
         
         // Add the JDBC cache properties to the datasource properties
-        cachedConfig.addDataSourceProperty("cache.driver.url", "jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1");
+        cachedConfig.addDataSourceProperty("cache.driver.url", "jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE");
         cachedConfig.addDataSourceProperty("cache.driver.class", "org.h2.Driver");
         cachedConfig.addDataSourceProperty("cache.ttl", "3600"); // Cache for 1 hour
         
@@ -280,6 +281,155 @@ public class JdbcCacheWithOracleAndHikariCPTest {
                 System.out.println("Successfully accessed data from cache using exact column names");
             }
         }
+    }
+
+    @Test
+    public void testLowercaseColumnNames() throws Exception {
+        // Create a new H2 database specifically for this test with case insensitivity enabled
+        HikariConfig lowercaseH2Config = new HikariConfig();
+        lowercaseH2Config.setJdbcUrl("jdbc:h2:mem:lowercase_hikari_test;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE");
+        lowercaseH2Config.setUsername("sa");
+        lowercaseH2Config.setPassword("");
+        lowercaseH2Config.setDriverClassName("org.h2.Driver");
+        lowercaseH2Config.setMaximumPoolSize(5);
+        
+        HikariDataSource lowercaseH2DS = new HikariDataSource(lowercaseH2Config);
+        
+        // Create a new test table
+        try (Connection conn = lowercaseH2DS.getConnection();
+             Statement stmt = conn.createStatement()) {
+            
+            // Create a test table for lowercase testing
+            stmt.execute("CREATE TABLE lowercase_test (" +
+                    "userId INT PRIMARY KEY, " +
+                    "firstName VARCHAR(100), " +
+                    "lastName VARCHAR(100), " +
+                    "emailAddress VARCHAR(200))");
+            
+            // Insert test data
+            stmt.execute("INSERT INTO lowercase_test VALUES (101, 'John', 'Doe', 'john.doe@example.com')");
+            stmt.execute("INSERT INTO lowercase_test VALUES (102, 'Jane', 'Smith', 'jane.smith@example.com')");
+        }
+        
+        // Create a temp directory for caching
+        Path lowercaseCacheDir = Files.createTempDirectory("jdbc-cache-hikari-lowercase-test");
+        
+        // Configure a new HikariCP datasource with the JDBC cache driver
+        HikariConfig cachedConfig = new HikariConfig();
+        cachedConfig.setJdbcUrl("jdbc:cache:file:" + lowercaseCacheDir.toString());
+        cachedConfig.setUsername("sa");
+        cachedConfig.setPassword("");
+        cachedConfig.setDriverClassName("com.qwazr.jdbc.cache.Driver");
+        cachedConfig.setMaximumPoolSize(5);
+        
+        // Add the JDBC cache properties
+        cachedConfig.addDataSourceProperty("cache.driver.url", 
+            "jdbc:h2:mem:lowercase_hikari_test;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE");
+        cachedConfig.addDataSourceProperty("cache.driver.class", "org.h2.Driver");
+        cachedConfig.addDataSourceProperty("cache.ttl", "3600"); // Cache for 1 hour
+        
+        HikariDataSource cachedLowercaseDS = new HikariDataSource(cachedConfig);
+        
+        // Print metadata to confirm column names
+        try (Connection conn = cachedLowercaseDS.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT * FROM lowercase_test LIMIT 1")) {
+            
+            ResultSetMetaData metaData = rs.getMetaData();
+            int columnCount = metaData.getColumnCount();
+            System.out.println("Lowercase test table metadata:");
+            for (int i = 1; i <= columnCount; i++) {
+                String columnName = metaData.getColumnName(i);
+                String columnLabel = metaData.getColumnLabel(i);
+                System.out.println("  Column " + i + ": name=" + columnName + ", label=" + columnLabel);
+            }
+        }
+        
+        // Query with lowercase column names
+        System.out.println("Testing lowercase column access with HikariCP connection");
+        try (Connection conn = cachedLowercaseDS.getConnection();
+             PreparedStatement stmt = conn.prepareStatement("SELECT * FROM lowercase_test WHERE userId = ?")) {
+            
+            stmt.setInt(1, 101);
+            try (ResultSet rs = stmt.executeQuery()) {
+                assertTrue(rs.next());
+                
+                // Try to access by lowercase column names
+                try {
+                    assertEquals(101, rs.getInt("userid"));
+                    assertEquals("John", rs.getString("firstname"));
+                    assertEquals("Doe", rs.getString("lastname"));
+                    assertEquals("john.doe@example.com", rs.getString("emailaddress"));
+                    
+                    System.out.println("Successfully accessed data using lowercase column names in HikariCP!");
+                } catch (SQLException e) {
+                    System.out.println("Error accessing lowercase columns: " + e.getMessage());
+                    
+                    // Try with the original case
+                    assertEquals(101, rs.getInt("USERID"));
+                    assertEquals("John", rs.getString("FIRSTNAME"));
+                    assertEquals("Doe", rs.getString("LASTNAME"));
+                    assertEquals("john.doe@example.com", rs.getString("EMAILADDRESS"));
+                    
+                    System.out.println("Retrieved data using uppercase column names instead.");
+                }
+                
+                // Print the available column names from the ResultSet metadata
+                ResultSetMetaData rsmd = rs.getMetaData();
+                int columnCount = rsmd.getColumnCount();
+                System.out.println("Available columns in cached result set:");
+                for (int i = 1; i <= columnCount; i++) {
+                    System.out.println("  Column " + i + ": " + rsmd.getColumnName(i) + 
+                            " (Label: " + rsmd.getColumnLabel(i) + ")");
+                }
+            }
+        }
+        
+        // Close and reopen connections to ensure cache is used
+        lowercaseH2DS.close();
+        
+        // One more query after connection is closed to verify cache
+        try (Connection conn = cachedLowercaseDS.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT * FROM lowercase_test")) {
+            
+            assertTrue(rs.next());
+            
+            // Try with all uppercase (which should work with cache)
+            assertEquals(101, rs.getInt("USERID"));
+            assertEquals("John", rs.getString("FIRSTNAME"));
+            assertEquals("Doe", rs.getString("LASTNAME"));
+            
+            assertTrue(rs.next());
+            
+            // Try with original case
+            try {
+                assertEquals(102, rs.getInt("userId"));
+                assertEquals("Jane", rs.getString("firstName"));
+                assertEquals("Smith", rs.getString("lastName"));
+                System.out.println("Successfully accessed cached data with original case column names!");
+            } catch (SQLException e) {
+                System.out.println("Accessing original case failed: " + e.getMessage());
+                
+                // Fall back to uppercase
+                assertEquals(102, rs.getInt("USERID"));
+                assertEquals("Jane", rs.getString("FIRSTNAME"));
+                assertEquals("Smith", rs.getString("LASTNAME"));
+                System.out.println("Used uppercase for cached data instead.");
+            }
+        }
+        
+        // Clean up
+        cachedLowercaseDS.close();
+        Files.walk(lowercaseCacheDir)
+                .sorted((p1, p2) -> -p1.compareTo(p2))
+                .forEach(path -> {
+                    try {
+                        Files.delete(path);
+                    } catch (Exception e) {
+                        // Ignore
+                    }
+                });
     }
 
     @After

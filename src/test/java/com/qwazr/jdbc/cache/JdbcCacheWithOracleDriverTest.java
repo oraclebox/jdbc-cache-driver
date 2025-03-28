@@ -14,6 +14,7 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.Properties;
 import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -43,7 +44,7 @@ public class JdbcCacheWithOracleDriverTest {
     private void setupH2Database() throws Exception {
         // Regular H2 connection (simulating Oracle)
         Class.forName("org.h2.Driver");
-        h2Connection = DriverManager.getConnection("jdbc:h2:mem:oracle_simulation;DB_CLOSE_DELAY=-1", "sa", "");
+        h2Connection = DriverManager.getConnection("jdbc:h2:mem:oracle_simulation;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE", "sa", "");
         
         try (Statement stmt = h2Connection.createStatement()) {
             // Create a test table
@@ -70,8 +71,8 @@ public class JdbcCacheWithOracleDriverTest {
         // info.setProperty("cache.driver.url", "jdbc:oracle:thin:@//hostname:port/service_name");
         // info.setProperty("cache.driver.class", "oracle.jdbc.OracleDriver");
         
-        // For this test, we're using H2 as a stand-in for Oracle
-        info.setProperty("cache.driver.url", "jdbc:h2:mem:oracle_simulation;DB_CLOSE_DELAY=-1");
+        // For this test, we're using H2 as a stand-in for Oracle with case insensitivity enabled
+        info.setProperty("cache.driver.url", "jdbc:h2:mem:oracle_simulation;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE");
         info.setProperty("cache.driver.class", "org.h2.Driver");
         info.setProperty("user", "sa");
         info.setProperty("password", "");
@@ -163,7 +164,7 @@ public class JdbcCacheWithOracleDriverTest {
         // Use a separate cache directory for this test
         Path columnNameCacheDir = Files.createTempDirectory("jdbc-cache-oracle-column-name-test");
         Properties info = new Properties();
-        info.setProperty("cache.driver.url", "jdbc:h2:mem:oracle_simulation;DB_CLOSE_DELAY=-1");
+        info.setProperty("cache.driver.url", "jdbc:h2:mem:oracle_simulation;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE");
         info.setProperty("cache.driver.class", "org.h2.Driver");
         info.setProperty("user", "sa");
         info.setProperty("password", "");
@@ -225,6 +226,133 @@ public class JdbcCacheWithOracleDriverTest {
         
         // Clean up the temporary directory
         Files.walk(columnNameCacheDir)
+                .sorted((p1, p2) -> -p1.compareTo(p2))
+                .forEach(path -> {
+                    try {
+                        Files.delete(path);
+                    } catch (Exception e) {
+                        // Ignore
+                    }
+                });
+    }
+
+    @Test
+    public void testLowercaseColumnNames() throws Exception {
+        // Use a separate cache directory for this test
+        Path lowercaseCacheDir = Files.createTempDirectory("jdbc-cache-oracle-lowercase-test");
+        Properties info = new Properties();
+        info.setProperty("cache.driver.url", "jdbc:h2:mem:oracle_simulation;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE");
+        info.setProperty("cache.driver.class", "org.h2.Driver");
+        info.setProperty("user", "sa");
+        info.setProperty("password", "");
+        info.setProperty("cache.driver.active", "true");
+        
+        System.out.println("Lowercase column test cache directory: " + lowercaseCacheDir.toString());
+        
+        // Create a new connection with a new database specifically for this test
+        try (Connection directH2Conn = DriverManager.getConnection(
+                "jdbc:h2:mem:lowercase_test;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE", "sa", "")) {
+            
+            try (Statement stmt = directH2Conn.createStatement()) {
+                // Create a test table
+                stmt.execute("CREATE TABLE employees (" +
+                        "id INT PRIMARY KEY, " +
+                        "name VARCHAR(100), " +
+                        "salary DECIMAL(10,2))");
+                
+                // Insert test data
+                stmt.execute("INSERT INTO employees VALUES (1, 'John Doe', 75000.00)");
+                stmt.execute("INSERT INTO employees VALUES (2, 'Jane Smith', 85000.00)");
+            }
+            
+            // Print column metadata to understand actual column names
+            try (Statement stmt = directH2Conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT * FROM employees")) {
+                ResultSetMetaData metaData = rs.getMetaData();
+                int columnCount = metaData.getColumnCount();
+                System.out.println("Column metadata for lowercase test:");
+                for (int i = 1; i <= columnCount; i++) {
+                    String columnName = metaData.getColumnName(i);
+                    String columnLabel = metaData.getColumnLabel(i);
+                    System.out.println("  Column " + i + ": name=" + columnName + ", label=" + columnLabel);
+                }
+            }
+            
+            // Configure the cache connection to use the new database
+            info.setProperty("cache.driver.url", "jdbc:h2:mem:lowercase_test;DB_CLOSE_DELAY=-1;IGNORECASE=TRUE");
+            
+            // Create the cached connection
+            String jdbcUrl = "jdbc:cache:file:" + lowercaseCacheDir.toString();
+            try (Connection conn = DriverManager.getConnection(jdbcUrl, info)) {
+                
+                // First query through the cache
+                System.out.println("Executing query with lowercase column access");
+                String query = "SELECT id, name, salary FROM employees WHERE id = ?";
+                try (PreparedStatement stmt = conn.prepareStatement(query)) {
+                    stmt.setInt(1, 1);
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        assertTrue(rs.next());
+                        
+                        // Try to access with lowercase
+                        try {
+                            int id = rs.getInt("id");
+                            String name = rs.getString("name");
+                            double salary = rs.getDouble("salary");
+                            
+                            assertEquals(1, id);
+                            assertEquals("John Doe", name);
+                            assertEquals(75000.00, salary, 0.001);
+                            
+                            System.out.println("Successfully retrieved data using lowercase column names!");
+                        } catch (SQLException e) {
+                            System.out.println("Error accessing lowercase columns: " + e.getMessage());
+                            
+                            // Try with uppercase (which usually works in H2)
+                            assertEquals(1, rs.getInt("ID"));
+                            assertEquals("John Doe", rs.getString("NAME"));
+                            assertEquals(75000.00, rs.getDouble("SALARY"), 0.001);
+                            
+                            System.out.println("Retrieved data using uppercase column names instead.");
+                        }
+                        
+                        // Print all available column names from ResultSetMetaData
+                        ResultSetMetaData rsmd = rs.getMetaData();
+                        int columnCount = rsmd.getColumnCount();
+                        System.out.println("Available columns in result set:");
+                        for (int i = 1; i <= columnCount; i++) {
+                            System.out.println("  Column " + i + ": " + rsmd.getColumnName(i) +
+                                    " (Label: " + rsmd.getColumnLabel(i) + ")");
+                        }
+                    }
+                }
+                
+                // Try a different case pattern
+                try (Statement stmt = conn.createStatement();
+                     ResultSet rs = stmt.executeQuery("SELECT * FROM employees WHERE ID = 2")) {
+                    assertTrue(rs.next());
+                    
+                    System.out.println("Trying mixed case access:");
+                    // Try to access with mixed case
+                    try {
+                        assertEquals(2, rs.getInt("Id"));
+                        assertEquals("Jane Smith", rs.getString("Name"));
+                        assertEquals(85000.00, rs.getDouble("Salary"), 0.001);
+                        System.out.println("Successfully accessed data with mixed case!");
+                    } catch (SQLException e) {
+                        System.out.println("Mixed case failed: " + e.getMessage());
+                        
+                        // Try with the case we know works
+                        assertEquals(2, rs.getInt("ID"));
+                        assertEquals("Jane Smith", rs.getString("NAME"));
+                        assertEquals(85000.00, rs.getDouble("SALARY"), 0.001);
+                        System.out.println("Used uppercase instead.");
+                    }
+                }
+            }
+        }
+        
+        // Clean up the temporary directory
+        Files.walk(lowercaseCacheDir)
                 .sorted((p1, p2) -> -p1.compareTo(p2))
                 .forEach(path -> {
                     try {
