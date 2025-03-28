@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.Statement;
 import java.util.HashMap;
 import java.util.Map;
@@ -19,6 +20,7 @@ import java.util.Properties;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNotNull;
 
 public class JdbcCacheWithOracleAndHikariCPTest {
 
@@ -180,6 +182,102 @@ public class JdbcCacheWithOracleAndHikariCPTest {
                 assertEquals(1, rs.getInt("id"));
                 String retrievedText = rs.getString("large_text");
                 assertEquals(70000, retrievedText.length());
+            }
+        }
+    }
+
+    @Test
+    public void testAdvancedColumnNameUsage() throws Exception {
+        // Create a table with mixed case and special column names
+        try (Connection conn = h2DataSource.getConnection();
+             Statement stmt = conn.createStatement()) {
+            
+            // Using quoted identifiers to preserve case in H2
+            stmt.execute("CREATE TABLE complex_columns (" +
+                    "\"ID\" INT PRIMARY KEY, " + 
+                    "\"UserName\" VARCHAR(100), " +
+                    "\"Last_Login_Date\" TIMESTAMP, " +
+                    "\"ACCOUNT_Balance\" DECIMAL(10,2))");
+            
+            // Insert test data
+            try (PreparedStatement pstmt = conn.prepareStatement(
+                    "INSERT INTO complex_columns VALUES (?, ?, ?, ?)")) {
+                pstmt.setInt(1, 100);
+                pstmt.setString(2, "JohnDoe123");
+                pstmt.setTimestamp(3, new java.sql.Timestamp(System.currentTimeMillis()));
+                pstmt.setBigDecimal(4, new java.math.BigDecimal("1234.56"));
+                pstmt.executeUpdate();
+                
+                pstmt.setInt(1, 101);
+                pstmt.setString(2, "JaneSmith456");
+                pstmt.setTimestamp(3, new java.sql.Timestamp(System.currentTimeMillis() - 86400000)); // 1 day ago
+                pstmt.setBigDecimal(4, new java.math.BigDecimal("5678.90"));
+                pstmt.executeUpdate();
+            }
+        }
+        
+        // Print column metadata to understand actual column names
+        try (Connection conn = cachedDataSource.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT * FROM complex_columns LIMIT 1")) {
+            
+            ResultSetMetaData metaData = rs.getMetaData();
+            int columnCount = metaData.getColumnCount();
+            System.out.println("Complex columns metadata:");
+            for (int i = 1; i <= columnCount; i++) {
+                String columnName = metaData.getColumnName(i);
+                String columnLabel = metaData.getColumnLabel(i);
+                System.out.println("  Column " + i + ": name=" + columnName + ", label=" + columnLabel);
+            }
+        }
+        
+        // First query to populate cache
+        System.out.println("Testing column name access with mixed case columns");
+        try (Connection conn = cachedDataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement("SELECT * FROM complex_columns WHERE \"ID\" = ?")) {
+            
+            stmt.setInt(1, 100);
+            try (ResultSet rs = stmt.executeQuery()) {
+                assertTrue(rs.next());
+                
+                // Access by exact case column names as defined in the schema with quotes
+                assertEquals(100, rs.getInt("ID"));
+                assertEquals("JohnDoe123", rs.getString("UserName"));
+                assertNotNull(rs.getTimestamp("Last_Login_Date"));
+                assertEquals(new java.math.BigDecimal("1234.56").doubleValue(), rs.getBigDecimal("ACCOUNT_Balance").doubleValue(), 0.001);
+                
+                System.out.println("Successfully accessed data using exact case column names");
+            }
+        }
+        
+        // Close and reopen connection to ensure we're using cache
+        h2DataSource.close();
+        
+        // Second query to verify cache with the exact column names
+        try (Connection conn = cachedDataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement("SELECT * FROM complex_columns WHERE \"ID\" = ?")) {
+            
+            stmt.setInt(1, 101);
+            try (ResultSet rs = stmt.executeQuery()) {
+                assertTrue(rs.next());
+                
+                // Access by the exact column names
+                assertEquals(101, rs.getInt("ID"));
+                assertEquals("JaneSmith456", rs.getString("UserName"));
+                assertNotNull(rs.getTimestamp("Last_Login_Date"));
+                assertEquals(new java.math.BigDecimal("5678.90").doubleValue(), rs.getBigDecimal("ACCOUNT_Balance").doubleValue(), 0.001);
+                
+                // Print column metadata again from this result set
+                ResultSetMetaData metaData = rs.getMetaData();
+                int columnCount = metaData.getColumnCount();
+                System.out.println("Column metadata from cached result:");
+                for (int i = 1; i <= columnCount; i++) {
+                    String columnName = metaData.getColumnName(i);
+                    String columnLabel = metaData.getColumnLabel(i);
+                    System.out.println("  Column " + i + ": name=" + columnName + ", label=" + columnLabel);
+                }
+                
+                System.out.println("Successfully accessed data from cache using exact column names");
             }
         }
     }

@@ -13,6 +13,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.Properties;
+import java.sql.ResultSetMetaData;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -155,6 +156,83 @@ public class JdbcCacheWithOracleDriverTest {
         System.out.println("   - cache.driver.class=oracle.jdbc.OracleDriver");
         System.out.println("   - user=your_username");
         System.out.println("   - password=your_password");
+    }
+    
+    @Test
+    public void testAccessingDataByColumnName() throws Exception {
+        // Use a separate cache directory for this test
+        Path columnNameCacheDir = Files.createTempDirectory("jdbc-cache-oracle-column-name-test");
+        Properties info = new Properties();
+        info.setProperty("cache.driver.url", "jdbc:h2:mem:oracle_simulation;DB_CLOSE_DELAY=-1");
+        info.setProperty("cache.driver.class", "org.h2.Driver");
+        info.setProperty("user", "sa");
+        info.setProperty("password", "");
+        info.setProperty("cache.driver.active", "true");
+        
+        System.out.println("Column name test cache directory: " + columnNameCacheDir.toString());
+        
+        // Create a connection specifically for this test
+        String jdbcUrl = "jdbc:cache:file:" + columnNameCacheDir.toString();
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, info)) {
+            // First execute an SQL query to check column metadata
+            System.out.println("Getting column metadata information");
+            try (Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT * FROM employees LIMIT 1")) {
+                // Print the column names and their case
+                ResultSetMetaData metaData = rs.getMetaData();
+                int columnCount = metaData.getColumnCount();
+                System.out.println("Column metadata information:");
+                for (int i = 1; i <= columnCount; i++) {
+                    String columnName = metaData.getColumnName(i);
+                    String columnLabel = metaData.getColumnLabel(i);
+                    System.out.println("  Column " + i + ": name=" + columnName + ", label=" + columnLabel);
+                }
+            }
+            
+            // First query - This will be cached
+            System.out.println("Executing query with column name access");
+            String query = "SELECT ID, NAME, SALARY, HIRE_DATE FROM employees WHERE ID = ?";
+            try (PreparedStatement stmt = conn.prepareStatement(query)) {
+                stmt.setInt(1, 1);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    assertTrue(rs.next());
+                    
+                    // Access data by column name - using uppercase as H2 standardizes to uppercase
+                    assertEquals(1, rs.getInt("ID"));
+                    assertEquals("John Doe", rs.getString("NAME"));
+                    assertEquals(75000.00, rs.getDouble("SALARY"), 0.001);
+                    
+                    System.out.println("Successfully accessed data by column name!");
+                }
+            }
+            
+            // Execute a query for a different employee using column names
+            String query2 = "SELECT * FROM employees WHERE ID = ?";
+            try (PreparedStatement stmt = conn.prepareStatement(query2)) {
+                stmt.setInt(1, 2);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    assertTrue(rs.next());
+                    
+                    // Access data by column name
+                    assertEquals(2, rs.getInt("ID"));
+                    assertEquals("Jane Smith", rs.getString("NAME"));
+                    assertEquals(85000.00, rs.getDouble("SALARY"), 0.001);
+                    
+                    System.out.println("Successfully retrieved second employee using column names!");
+                }
+            }
+        }
+        
+        // Clean up the temporary directory
+        Files.walk(columnNameCacheDir)
+                .sorted((p1, p2) -> -p1.compareTo(p2))
+                .forEach(path -> {
+                    try {
+                        Files.delete(path);
+                    } catch (Exception e) {
+                        // Ignore
+                    }
+                });
     }
 
     @After
