@@ -82,6 +82,46 @@ info.setProperty("cache.driver.active", "false");
 Connection cnx = DriverManager.getConnection("jdbc:cache:file:/var/jdbc/cache", info);
 ```
 
+### Best Practices for Column Name Handling
+
+When using the JDBC cache driver, it's important to understand how column names are handled:
+
+1. **Case Sensitivity**: The JDBC cache driver requires exact case matching for column names, even when the underlying database supports case-insensitive column access.
+
+2. **Column Name Access**:
+   - Always use the exact case of column names as they are stored in the database
+   - For H2 databases, column names are typically stored in uppercase by default
+   - When using quoted identifiers in H2, the case is preserved as specified
+
+3. **Example with H2**:
+```java
+// H2 typically stores column names in uppercase
+ResultSet rs = stmt.executeQuery("SELECT * FROM employees");
+rs.getInt("ID");        // Works
+rs.getInt("id");        // May fail
+rs.getInt("Id");        // May fail
+
+// With quoted identifiers, case is preserved
+ResultSet rs = stmt.executeQuery("SELECT \"userId\", \"firstName\" FROM users");
+rs.getInt("userId");    // Works
+rs.getInt("USERID");    // May fail
+```
+
+4. **Database-Specific Behavior**:
+   - Oracle: Column names are typically uppercase unless quoted
+   - H2: Column names are uppercase by default unless quoted
+   - Other databases may have different default behaviors
+
+5. **Troubleshooting**:
+   - If you encounter "Column not found" errors, check the actual column names using `ResultSetMetaData`
+   - Print column metadata to verify the exact case of column names:
+```java
+ResultSetMetaData metaData = rs.getMetaData();
+for (int i = 1; i <= metaData.getColumnCount(); i++) {
+    System.out.println("Column " + i + ": " + metaData.getColumnName(i));
+}
+```
+
 Community
 ---------
 
